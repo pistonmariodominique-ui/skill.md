@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VoltBot ⚡ — Or & Haute Volatilité</title>
+<style>
+  /* Thème sombre délibéré (dashboard de trading) — palette dataviz validée sur #1a1a19 */
+  :root {
+    --page: #0d0d0d;
+    --surface-1: #1a1a19;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255,255,255,0.10);
+    --pos: #3987e5;      /* pôle positif (divergent bleu↔rouge) */
+    --neg: #e66767;      /* pôle négatif */
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --accent: #eda100;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    min-height: 100vh;
+    padding: 24px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  h1 .volt { color: var(--accent); }
+  .badge {
+    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-secondary);
+  }
+  .badge.demo { color: var(--warning); border-color: var(--warning); }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .status-dot.on { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .status-dot.off { background: var(--critical); }
+  #toggleBtn {
+    margin-left: auto; padding: 10px 22px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface-1); color: var(--text-primary); font-size: 0.9rem; font-weight: 600;
+    cursor: pointer; transition: opacity 0.15s;
+  }
+  #toggleBtn:hover { opacity: 0.85; }
+  #toggleBtn.running { border-color: var(--critical); color: var(--critical); }
+  #toggleBtn.stopped { border-color: var(--good); color: var(--good); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .tile .label { font-size: 0.75rem; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .tile .value { font-size: 1.6rem; font-weight: 700; }
+  .tile .sub { font-size: 0.78rem; color: var(--text-secondary); margin-top: 4px; }
+  .value.pos { color: var(--good); }
+  .value.neg { color: var(--neg); }
+
+  .grid2 { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  @media (min-width: 900px) { .grid2 { grid-template-columns: 3fr 2fr; } }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  .card h2 { font-size: 0.95rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 14px; }
+
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--grid); color: var(--text-secondary); white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .dir { font-weight: 600; }
+  .dir.BUY { color: var(--pos); }
+  .dir.SELL { color: var(--neg); }
+  .pnl-pos { color: var(--good); font-weight: 600; }
+  .pnl-neg { color: var(--neg); font-weight: 600; }
+  .empty { color: var(--muted); font-size: 0.85rem; padding: 12px 0; }
+
+  .signal { padding: 10px 0; border-bottom: 1px solid var(--grid); font-size: 0.82rem; }
+  .signal:last-child { border-bottom: none; }
+  .signal .top { display: flex; gap: 8px; align-items: baseline; margin-bottom: 3px; }
+  .signal .inst { font-weight: 600; color: var(--text-primary); }
+  .signal .conf { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+  .signal .why { color: var(--muted); line-height: 1.35; }
+
+  #chart { width: 100%; }
+  .chart-tip {
+    position: fixed; pointer-events: none; z-index: 10; display: none;
+    background: #242423; border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 12px; font-size: 0.8rem; color: var(--text-primary);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
+  .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; font-size: 0.82rem; }
+  .settings-grid div { color: var(--muted); }
+  .settings-grid b { color: var(--text-secondary); font-weight: 600; display: block; }
+  footer { color: var(--muted); font-size: 0.75rem; text-align: center; margin-top: 24px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="volt">⚡</span> VoltBot</h1>
+    <span class="badge demo" id="modeBadge">DEMO</span>
+    <span class="badge"><span class="status-dot" id="statusDot"></span>&nbsp;<span id="statusText">…</span></span>
+    <button id="toggleBtn">…</button>
+  </header>
+
+  <div class="tiles">
+    <div class="tile"><div class="label">Solde (démo)</div><div class="value" id="balance">—</div><div class="sub" id="balanceSub"></div></div>
+    <div class="tile"><div class="label">P&L du jour</div><div class="value" id="dayPnl">—</div><div class="sub" id="dayPnlSub"></div></div>
+    <div class="tile"><div class="label">Win rate (jour)</div><div class="value" id="winRate">—</div><div class="sub" id="winRateSub"></div></div>
+    <div class="tile"><div class="label">Positions ouvertes</div><div class="value" id="openCount">—</div><div class="sub" id="openSub"></div></div>
+  </div>
+
+  <div class="card">
+    <h2>P&L quotidien — 14 derniers jours (€)</h2>
+    <div id="chart"></div>
+    <div class="chart-tip" id="chartTip"></div>
+  </div>
+
+  <div class="grid2">
+    <div>
+      <div class="card">
+        <h2>Positions ouvertes</h2>
+        <div class="table-scroll"><table id="openTable">
+          <thead><tr><th>Instrument</th><th>Sens</th><th>Entrée</th><th>SL bot</th><th>TP bot</th><th>Taille</th><th>Ouvert</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <div class="empty" id="openEmpty" style="display:none">Aucune position ouverte</div>
+      </div>
+      <div class="card">
+        <h2>Derniers trades fermés</h2>
+        <div class="table-scroll"><table id="closedTable">
+          <thead><tr><th>Instrument</th><th>Sens</th><th>Entrée → Sortie</th><th>P&L</th><th>Raison</th><th>Fermé</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <div class="empty" id="closedEmpty" style="display:none">Aucun trade fermé pour l'instant</div>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h2>Dernières analyses</h2>
+        <div id="signals"></div>
+        <div class="empty" id="signalsEmpty" style="display:none">Aucune analyse pour l'instant — le bot analyse toutes les 15 min quand il tourne</div>
+      </div>
+      <div class="card">
+        <h2>Réglages</h2>
+        <div class="settings-grid" id="settings"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    VoltBot — bot or / argent / gaz naturel optimisé haute volatilité · Capital.com <b>DÉMO</b> · Supabase jarvis-mario<br>
+    Analyse toutes les 15 min (volt-trader) · Surveillance chaque minute (volt-monitor) · Actualisation auto toutes les 30 s
+  </footer>
+</div>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const SUPABASE_URL = 'https://qjnbjslenxsnfrhmlbxn.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFqbmJqc2xlbnhzbmZyaG1sYnhuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5Mzc0ODQsImV4cCI6MjA5NjUxMzQ4NH0.ReIsVCs8JGwBV017TMRbQXiPmMrSBLgdX9tzlChTxIY';
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const fmt = (n, d = 2) => n == null ? '—' : Number(n).toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtTime = (iso) => new Date(iso).toLocaleString('fr-FR', { timeZone: 'Europe/Paris', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+let botStatus = null;
+
+async function refresh() {
+  const [statusR, settingsR, perfR, openR, closedR, signalsR] = await Promise.all([
+    sb.from('volt_bot_status').select('*').limit(1).single(),
+    sb.from('volt_settings').select('*').limit(1).single(),
+    sb.from('volt_performance').select('*').order('date', { ascending: false }).limit(14),
+    sb.from('volt_trades').select('*').eq('status', 'OPEN').order('opened_at', { ascending: false }),
+    sb.from('volt_trades').select('*').eq('status', 'CLOSED').order('closed_at', { ascending: false }).limit(10),
+    sb.from('volt_signals').select('*').order('created_at', { ascending: false }).limit(8),
+  ]);
+
+  botStatus = statusR.data;
+  renderStatus(statusR.data);
+  renderTiles(statusR.data, perfR.data ?? [], openR.data ?? []);
+  renderChart((perfR.data ?? []).slice().reverse());
+  renderOpen(openR.data ?? []);
+  renderClosed(closedR.data ?? []);
+  renderSignals(signalsR.data ?? []);
+  renderSettings(settingsR.data);
+}
+
+function renderStatus(s) {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  const btn = document.getElementById('toggleBtn');
+  const running = !!s?.is_running;
+  dot.className = 'status-dot ' + (running ? 'on' : 'off');
+  txt.textContent = running ? 'En marche' : 'Arrêté';
+  btn.textContent = running ? '⏸ Arrêter le bot' : '▶ Démarrer le bot';
+  btn.className = running ? 'running' : 'stopped';
+  document.getElementById('modeBadge').textContent = (s?.mode ?? 'demo').toUpperCase();
+}
+
+function renderTiles(s, perf, open) {
+  document.getElementById('balance').textContent = s?.balance != null ? fmt(s.balance) + ' €' : '—';
+  document.getElementById('balanceSub').textContent = s?.updated_at ? 'maj ' + fmtTime(s.updated_at) : '';
+  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
+  const t = perf.find(p => p.date === today);
+  const pnl = t ? Number(t.total_pnl) : 0;
+  const el = document.getElementById('dayPnl');
+  el.textContent = (pnl > 0 ? '+' : '') + fmt(pnl) + ' €';
+  el.className = 'value ' + (pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '');
+  document.getElementById('dayPnlSub').textContent = t ? `${t.total_trades} trade(s)` : 'aucun trade aujourd’hui';
+  document.getElementById('winRate').textContent = t && t.total_trades > 0 ? Math.round(t.win_rate) + ' %' : '—';
+  document.getElementById('winRateSub').textContent = t ? `${t.winning_trades}/${t.total_trades} gagnants` : '';
+  document.getElementById('openCount').textContent = open.length;
+  document.getElementById('openSub').textContent = open.map(o => o.instrument).join(', ') || 'aucune';
+}
+
+// Barres divergentes P&L : bleu = jour positif, rouge = jour négatif (paire validée
+// CVD ΔE 66 sur fond sombre) ; identité aussi portée par le signe affiché au survol.
+function renderChart(days) {
+  const el = document.getElementById('chart');
+  if (!days.length) { el.innerHTML = '<div class="empty">Pas encore de données de performance</div>'; return; }
+  const W = 720, H = 180, padL = 8, padR = 8, padT = 18, padB = 24;
+  const vals = days.map(d => Number(d.total_pnl) || 0);
+  const maxAbs = Math.max(1, ...vals.map(Math.abs));
+  const zeroY = padT + (H - padT - padB) / 2;
+  const scale = (H - padT - padB) / 2 / maxAbs;
+  const n = days.length;
+  const step = (W - padL - padR) / n;
+  const barW = Math.min(40, step - 2); // 2px d'écart entre barres
+
+  let bars = '';
+  days.forEach((d, i) => {
+    const v = Number(d.total_pnl) || 0;
+    const x = padL + i * step + (step - barW) / 2;
+    const h = Math.max(Math.abs(v) * scale, v === 0 ? 0 : 2);
+    const y = v >= 0 ? zeroY - h : zeroY;
+    const color = v >= 0 ? 'var(--pos)' : 'var(--neg)';
+    const rx = 4;
+    // bout arrondi côté donnée uniquement, base ancrée sur la ligne zéro
+    const path = v >= 0
+      ? `M${x},${zeroY} L${x},${y + rx} Q${x},${y} ${x + rx},${y} L${x + barW - rx},${y} Q${x + barW},${y} ${x + barW},${y + rx} L${x + barW},${zeroY} Z`
+      : `M${x},${zeroY} L${x},${zeroY + h - rx} Q${x},${zeroY + h} ${x + rx},${zeroY + h} L${x + barW - rx},${zeroY + h} Q${x + barW},${zeroY + h} ${x + barW},${zeroY + h - rx} L${x + barW},${zeroY} Z`;
+    const label = new Date(d.date + 'T12:00:00Z').toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+    bars += v === 0
+      ? `<rect x="${x}" y="${zeroY - 1}" width="${barW}" height="2" fill="var(--baseline)" data-i="${i}"/>`
+      : `<path d="${path}" fill="${color}" data-i="${i}"/>`;
+    bars += `<rect x="${padL + i * step}" y="${padT}" width="${step}" height="${H - padT - padB}" fill="transparent" data-i="${i}" class="hit"/>`;
+    if (i % Math.ceil(n / 7) === 0 || i === n - 1) {
+      bars += `<text x="${x + barW / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--muted)">${label}</text>`;
+    }
+  });
+
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="P&L quotidien sur 14 jours">
+    <line x1="${padL}" y1="${zeroY}" x2="${W - padR}" y2="${zeroY}" stroke="var(--baseline)" stroke-width="1"/>
+    ${bars}</svg>`;
+
+  const tip = document.getElementById('chartTip');
+  el.querySelectorAll('[data-i]').forEach(node => {
+    node.addEventListener('mousemove', (e) => {
+      const d = days[Number(node.dataset.i)];
+      const v = Number(d.total_pnl) || 0;
+      tip.style.display = 'block';
+      tip.style.left = (e.clientX + 14) + 'px';
+      tip.style.top = (e.clientY - 10) + 'px';
+      tip.innerHTML = `<b>${new Date(d.date + 'T12:00:00Z').toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit' })}</b><br>` +
+        `P&L : <b style="color:${v >= 0 ? 'var(--good)' : 'var(--neg)'}">${v > 0 ? '+' : ''}${fmt(v)} €</b><br>` +
+        `${d.total_trades} trade(s) · ${Math.round(d.win_rate)} % gagnants`;
+    });
+    node.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  });
+}
+
+function renderOpen(rows) {
+  const tbody = document.querySelector('#openTable tbody');
+  document.getElementById('openEmpty').style.display = rows.length ? 'none' : 'block';
+  document.getElementById('openTable').style.display = rows.length ? '' : 'none';
+  tbody.innerHTML = rows.map(t => `<tr>
+    <td><b>${esc(t.instrument)}</b></td>
+    <td class="dir ${esc(t.direction)}">${esc(t.direction)}</td>
+    <td class="num">${fmt(t.entry_price, 2)}</td>
+    <td class="num">${fmt(t.sl_price, 2)}</td>
+    <td class="num">${fmt(t.tp_price, 2)}</td>
+    <td class="num">${fmt(t.size, 2)}</td>
+    <td>${fmtTime(t.opened_at)}</td>
+  </tr>`).join('');
+}
+
+function renderClosed(rows) {
+  const tbody = document.querySelector('#closedTable tbody');
+  document.getElementById('closedEmpty').style.display = rows.length ? 'none' : 'block';
+  document.getElementById('closedTable').style.display = rows.length ? '' : 'none';
+  tbody.innerHTML = rows.map(t => {
+    const pnl = Number(t.profit_loss) || 0;
+    return `<tr>
+      <td><b>${esc(t.instrument)}</b></td>
+      <td class="dir ${esc(t.direction)}">${esc(t.direction)}</td>
+      <td class="num">${fmt(t.entry_price, 2)} → ${fmt(t.exit_price, 2)}</td>
+      <td class="num ${pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${pnl > 0 ? '+' : ''}${fmt(pnl)} €${t.pnl_reconciled ? '' : ' *'}</td>
+      <td>${esc(t.close_reason ?? '')}</td>
+      <td>${t.closed_at ? fmtTime(t.closed_at) : ''}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderSignals(rows) {
+  const el = document.getElementById('signals');
+  document.getElementById('signalsEmpty').style.display = rows.length ? 'none' : 'block';
+  el.innerHTML = rows.map(s => `<div class="signal">
+    <div class="top">
+      <span class="inst">${esc(s.instrument)}</span>
+      <span class="dir ${esc(s.direction)}">${esc(s.direction)}${s.executed ? ' ✅' : ''}</span>
+      <span class="conf">${s.confidence != null ? Math.round(s.confidence * 100) + ' %' : ''} · ${fmtTime(s.created_at)}</span>
+    </div>
+    <div class="why">${esc(s.reasoning ?? '')}${s.vol_ratio != null ? ` <i>(vol ${fmt(s.vol_ratio, 2)})</i>` : ''}</div>
+  </div>`).join('');
+}
+
+function renderSettings(s) {
+  if (!s) return;
+  document.getElementById('settings').innerHTML = `
+    <div><b>${(s.instruments ?? []).join(', ')}</b>Instruments</div>
+    <div><b>${fmt(s.risk_pct, 1)} %</b>Risque / trade</div>
+    <div><b>${fmt(s.atr_sl_mult, 1)}×ATR / ${fmt(s.atr_tp_mult, 1)}×ATR</b>SL / TP</div>
+    <div><b>${fmt(s.vol_ratio_min, 1)} – ${fmt(s.vol_ratio_max, 1)}</b>Fenêtre volatilité</div>
+    <div><b>${Math.round(s.min_confidence * 100)} %</b>Confiance min</div>
+    <div><b>${s.max_open_trades} / ${s.max_trades_per_day}</b>Max ouvert / jour</div>
+    <div><b>-${fmt(s.daily_loss_limit, 0)} € / -${fmt(s.weekly_loss_limit, 0)} €</b>Limite jour / semaine</div>
+    <div><b>${esc(s.broker)} ${esc(s.environment)}</b>Broker</div>`;
+}
+
+document.getElementById('toggleBtn').addEventListener('click', async () => {
+  if (!botStatus) return;
+  const next = !botStatus.is_running;
+  const label = next ? 'démarrer' : 'arrêter';
+  if (!confirm(`Veux-tu vraiment ${label} VoltBot ?`)) return;
+  const { error } = await sb.from('volt_bot_status')
+    .update({ is_running: next, updated_at: new Date().toISOString() })
+    .eq('id', botStatus.id);
+  if (error) alert('Erreur : ' + error.message);
+  await refresh();
+});
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
