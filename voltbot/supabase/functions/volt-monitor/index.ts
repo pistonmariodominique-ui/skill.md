@@ -1,15 +1,16 @@
-// volt-monitor — Version 2 (2026-07-11) — VoltBot : surveillance des positions or/argent/gaz
-// v2 : TTL du verrou 55 s (vraie cadence 1 min ; 100 s sautait un cycle sur deux)
-// Cron 1 min. Adapté du trade-monitor v38 de ForexBot :
-// - SL/TP lus depuis les niveaux STOCKÉS à l'ouverture (sl_price / tp_price) — pas de recalcul
-// - Breakeven armé à +1×SL, trailing 50% du pic, time-stops (2h/2h30/6h)
-// - Fermeture de TOUTES les positions à 22h Paris (thèse M15 ne survit pas à la nuit),
-//   vendredi 19h UTC (les métaux gappent violemment le dimanche soir)
-// - Détection « fermé par le broker » : le stop GARANTI ferme côté Capital entre deux cycles →
-//   la position disparaît de /positions → on clôt en base et la réconciliation lit le P&L réel
-// - Réconciliation du P&L RÉEL via /history/transactions (pattern v38), matching par dealId
-//   restreint aux epics VoltBot (jamais les trades forex de ForexBot)
-// - Adoption des positions orphelines GOLD/SILVER/NATURALGAS (epics disjoints de ForexBot)
+// volt-monitor — Version 3 (2026-07-12) — VoltBot : surveillance « trend hunter »
+// v3 — SORTIE GAGNANTE PAR TRAILING ATR (chandelier) :
+//   - Plus de take-profit fixe : après un pic ≥ 1×SL, on sort quand le prix retrace
+//     trail_atr_mult × ATR(ouverture) depuis le plus haut atteint. Les gagnants courent.
+//   - Breakeven armé à +1×SL (le trade ne peut plus perdre), conservé.
+//   - 7 instruments (Or, Argent, Gaz, Pétrole, US30, BTC, ETH). Le crypto est surveillé
+//     24/7 : plus de blocage week-end global — on se fie au marketStatus du broker
+//     par instrument. Fermetures EOD/vendredi réservées aux instruments non-24/7 ;
+//     le crypto a un plafond absolu de 24h par trade (thèse M15 périmée au-delà).
+// v2 : TTL du verrou 55 s (vraie cadence 1 min). Conservé.
+// Hérité du trade-monitor v38 de ForexBot : réconciliation du P&L RÉEL via
+// /history/transactions (matching dealId restreint aux epics VoltBot), adoption des
+// positions orphelines, détection « fermé par le broker » (stop garanti déclenché).
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -23,20 +24,23 @@ const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? '';
 const ADMIN_CHAT_ID = Deno.env.get('TELEGRAM_ADMIN_CHAT_ID') ?? '';
 
-const TIME_STOP_MS = 2 * 60 * 60 * 1000;
-const TIME_STOP_MAX_MS = 2.5 * 60 * 60 * 1000;
-const WINNER_MAX_MS = 6 * 60 * 60 * 1000;
-const TRAIL_KEEP_RATIO = 0.5;
+const TIME_STOP_MS = 2 * 60 * 60 * 1000;        // 2h : re-jugement des trades qui ne partent pas
+const TIME_STOP_MAX_MS = 2.5 * 60 * 60 * 1000;  // 2h30 : plafond des perdants
+const WINNER_MAX_MS = 6 * 60 * 60 * 1000;       // 6h : plafond des gagnants SANS breakeven (pas encore un vrai runner)
+const RUNNER_MAX_MS = 24 * 60 * 60 * 1000;      // 24h : plafond absolu d'un runner (crypto surtout)
+const TRAIL_ATR_MULT_DEFAULT = 2.5;
 const EOD_HOUR_PARIS = 22;
 const FRIDAY_EOD_HOUR_UTC = 19;
 const RECONCILE_WINDOW_MS = 96 * 60 * 60 * 1000;
 const RECONCILE_SETTLE_MS = 6 * 60 * 60 * 1000;
 
-const EPIC_TO_INSTRUMENT: Record<string, string> = {
-  GOLD: 'GOLD', SILVER: 'SILVER', NATURALGAS: 'NATURALGAS'
+// Instruments (epics = clés). is247 : pas de fermeture EOD/week-end (crypto).
+const INSTRUMENT_META: Record<string, { is247: boolean }> = {
+  GOLD: { is247: false }, SILVER: { is247: false }, NATURALGAS: { is247: false },
+  OIL_CRUDE: { is247: false }, US30: { is247: false },
+  BTCUSD: { is247: true }, ETHUSD: { is247: true },
 };
-const INSTRUMENT_TO_EPIC: Record<string, string> = EPIC_TO_INSTRUMENT;
-const VOLT_EPICS = new Set(Object.keys(EPIC_TO_INSTRUMENT));
+const VOLT_EPICS = new Set(Object.keys(INSTRUMENT_META));
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -64,7 +68,11 @@ async function capitalAuth() {
 async function getPrice(cst: string, token: string, epic: string) {
   const r = await fetch(`${CAPITAL_URL}/api/v1/markets/${epic}`, { headers: capHeaders(cst, token) });
   const data = await r.json();
-  return { bid: data.snapshot?.bid, offer: data.snapshot?.offer };
+  return {
+    bid: data.snapshot?.bid,
+    offer: data.snapshot?.offer,
+    marketStatus: String(data.snapshot?.marketStatus ?? '').toUpperCase()
+  };
 }
 
 async function getRecentCandles(cst: string, token: string, epic: string) {
@@ -184,15 +192,6 @@ async function recomputePerformance(dateStr: string) {
   }
 }
 
-function marketClosedReason(now: Date): string | null {
-  const day = now.getUTCDay(), hour = now.getUTCHours();
-  if (day === 6) return 'week-end';
-  if (day === 5 && hour >= 21) return 'week-end (vendredi soir)';
-  if (day === 0 && hour < 22) return 'week-end (dimanche)';
-  if (hour === 21) return 'pause quotidienne 21h-22h UTC';
-  return null;
-}
-
 function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -208,7 +207,7 @@ Deno.serve(async (req: Request) => {
   try {
     const chatId = await getChatId();
 
-    const { data: statusRow } = await supabase.from('volt_bot_status').select('id').single();
+    const { data: statusRow } = await supabase.from('volt_bot_status').select('id, last_eur_usd').single();
     if (statusRow?.id) {
       // TTL 55 s (< période cron de 60 s) : protège contre un chevauchement réel sans
       // sauter un cycle sur deux (un TTL de 100 s ferait tourner le monitor toutes les 2 min).
@@ -223,12 +222,12 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const closedReason = marketClosedReason(new Date());
-    if (closedReason) {
-      return new Response(JSON.stringify({ message: `Marché fermé — ${closedReason}` }), { status: 200 });
-    }
-
+    // v3 : PAS de blocage week-end global — le crypto vit 24/7. Chaque trade est
+    // géré selon le marketStatus broker de SON instrument.
     const { cst, token } = await capitalAuth();
+
+    const { data: settingsRow } = await supabase.from('volt_settings').select('trail_atr_mult').single();
+    const trailMult = parseFloat(String(settingsRow?.trail_atr_mult ?? TRAIL_ATR_MULT_DEFAULT)) || TRAIL_ATR_MULT_DEFAULT;
 
     // ── Réconciliation du P&L réel (pattern v38) ──
     try {
@@ -254,7 +253,7 @@ Deno.serve(async (req: Request) => {
               if (!usedIdx.has(i)) { real = list[i].net; usedIdx.add(i); reconciledAs = 'real'; }
             }
             if (real === undefined) {
-              const epic = INSTRUMENT_TO_EPIC[tr.instrument] ?? tr.instrument;
+              const epic = tr.instrument;
               const oMs = new Date(tr.opened_at).getTime(), cMs = new Date(tr.closed_at).getTime() + 5 * 60 * 1000;
               const i = list.findIndex((x, idx) => !usedIdx.has(idx) && x.epic === epic && x.ms >= oMs && x.ms <= cMs);
               if (i >= 0) { real = list[i].net; matchedDeal = list[i].dealId; usedIdx.add(i); reconciledAs = 'real'; }
@@ -287,8 +286,8 @@ Deno.serve(async (req: Request) => {
       const posListR = await fetch(`${CAPITAL_URL}/api/v1/positions`, { headers: capHeaders(cst, token) });
       posListData = posListR.ok ? await posListR.json() : { positions: [] };
       for (const p of (posListData.positions ?? [])) {
-        const instrument = EPIC_TO_INSTRUMENT[p.market?.epic ?? ''];
-        if (!instrument || openInstruments.has(instrument)) continue;
+        const epicP = p.market?.epic ?? '';
+        if (!VOLT_EPICS.has(epicP) || openInstruments.has(epicP)) continue;
         const direction = p.position?.direction ?? null;
         const entryPrice = p.position?.level ?? null;
         const size = p.position?.size ?? null;
@@ -301,7 +300,7 @@ Deno.serve(async (req: Request) => {
         const windowEnd = new Date(posCreatedAt.getTime() + 2 * 60 * 1000).toISOString();
         const { data: recentSame } = await supabase.from('volt_trades')
           .select('id, entry_price, status, closed_at')
-          .eq('instrument', instrument)
+          .eq('instrument', epicP)
           .gte('opened_at', windowStart).lte('opened_at', windowEnd);
         const matching = (recentSame ?? []).filter((t: any) =>
           Math.abs(parseFloat(t.entry_price) - Number(entryPrice)) < tolerance);
@@ -312,14 +311,14 @@ Deno.serve(async (req: Request) => {
         if (isRaceDuplicate) continue;
 
         const { error: insertErr } = await supabase.from('volt_trades').insert({
-          instrument, direction, entry_price: entryPrice, size,
+          instrument: epicP, direction, entry_price: entryPrice, size,
           status: 'OPEN', deal_reference: dealId, broker_deal_id: dealId,
           opened_at: p.position?.createdDateUTC ?? new Date().toISOString()
         });
         if (insertErr) continue;
-        openInstruments.add(instrument);
+        openInstruments.add(epicP);
         await sendTelegram(chatId,
-          `🔗 *Position orpheline récupérée — ${instrument}*\nDirection: ${direction} | Entrée: ${entryPrice}\nElle est désormais surveillée normalement.`);
+          `🔗 *Position orpheline récupérée — ${epicP}*\nDirection: ${direction} | Entrée: ${entryPrice}\nElle est désormais surveillée normalement.`);
       }
     } catch (err) { console.error('[orphelins]', String(err)); }
 
@@ -327,12 +326,17 @@ Deno.serve(async (req: Request) => {
     const { data: openTrades } = await supabase.from('volt_trades').select('*').eq('status', 'OPEN');
     const closedResults: any[] = [];
 
+    // Taux EUR/USD (forex fermé le week-end → secours = dernier taux connu en base)
     let eurUsd: number | null = null;
     if ((openTrades ?? []).length > 0) {
       try {
         const fx = await getPrice(cst, token, 'EURUSD');
         if (fx.bid && fx.offer) eurUsd = (fx.bid + fx.offer) / 2;
-      } catch { /* fallback USD≈EUR */ }
+      } catch { /* secours ci-dessous */ }
+      if (!eurUsd) {
+        const raw = parseFloat(String(statusRow?.last_eur_usd ?? ''));
+        if (Number.isFinite(raw) && raw > 0) eurUsd = raw;
+      }
     }
 
     const nowUtc = new Date();
@@ -341,7 +345,8 @@ Deno.serve(async (req: Request) => {
 
     for (const trade of (openTrades ?? [])) {
       try {
-        const epic = INSTRUMENT_TO_EPIC[trade.instrument] ?? trade.instrument;
+        const epic = trade.instrument; // v3 : les clés d'instrument SONT les epics
+        const is247 = INSTRUMENT_META[epic]?.is247 ?? false;
         const dealRef = trade.deal_reference ?? '';
         const entryPrice = parseFloat(trade.entry_price);
 
@@ -359,19 +364,19 @@ Deno.serve(async (req: Request) => {
           trade.broker_deal_id = posMatch.position.dealId;
         }
 
-        // Position absente du broker → stop garanti/TP déclenché côté Capital entre deux cycles.
+        // Position absente du broker → stop garanti déclenché côté Capital entre deux cycles.
         // Grâce de 3 min après l'ouverture (latence de propagation côté broker).
         const ageMs = Date.now() - new Date(trade.opened_at).getTime();
         if (!posMatch && ageMs > 3 * 60 * 1000) {
           const { data: closedData } = await supabase.from('volt_trades').update({
             status: 'CLOSED', closed_at: new Date().toISOString(),
-            close_reason: '🏦 Fermé par le broker (stop garanti / TP)', pnl_reconciled: false
+            close_reason: '🏦 Fermé par le broker (stop garanti)', pnl_reconciled: false
           }).eq('id', trade.id).eq('status', 'OPEN').select('id');
           if (closedData && closedData.length > 0) {
             await recomputePerformance(pDate(new Date().toISOString()));
             await sendTelegram(chatId,
               `🏦 *Position fermée par le broker — ${trade.instrument}*\n` +
-              `Stop garanti ou take-profit déclenché côté Capital.\n` +
+              `Stop garanti déclenché côté Capital.\n` +
               `P&L réel lu à la réconciliation (prochain cycle).`);
             closedResults.push({ instrument: trade.instrument, reason: 'BROKER_CLOSED' });
           }
@@ -379,18 +384,20 @@ Deno.serve(async (req: Request) => {
         }
 
         const price = await getPrice(cst, token, epic);
+        // Marché fermé (pause quotidienne, week-end commodities…) : prix gelés et ordres
+        // refusés — on ne prend AUCUNE décision sur cet instrument ce cycle.
+        if (price.marketStatus !== 'TRADEABLE') continue;
         const currentPrice = trade.direction === 'BUY' ? price.bid : price.offer;
         if (!currentPrice) continue;
 
         const pnlDist = trade.direction === 'BUY' ? currentPrice - entryPrice : entryPrice - currentPrice;
         const slPrice = trade.sl_price != null ? parseFloat(trade.sl_price) : null;
-        const tpPrice = trade.tp_price != null ? parseFloat(trade.tp_price) : null;
-        const slDist = slPrice != null ? Math.abs(entryPrice - slPrice) : (Number(trade.atr_at_open) || 0) * 1.5;
+        const atrOpen = Number(trade.atr_at_open) || 0;
+        const slDist = slPrice != null ? Math.abs(entryPrice - slPrice) : atrOpen * 1.5;
 
         const hitSL = slPrice != null && (trade.direction === 'BUY' ? currentPrice <= slPrice : currentPrice >= slPrice);
-        const hitTP = tpPrice != null && (trade.direction === 'BUY' ? currentPrice >= tpPrice : currentPrice <= tpPrice);
-        let shouldClose = hitSL || hitTP;
-        let closeReason = hitTP ? '🎯 Take-Profit' : hitSL ? '🛑 Stop-Loss' : '';
+        let shouldClose = hitSL;
+        let closeReason = hitSL ? '🛑 Stop-Loss' : '';
 
         // Suivi du pic de gain (en unités de prix)
         const prevMax = Number(trade.max_pnl_points ?? 0);
@@ -399,31 +406,39 @@ Deno.serve(async (req: Request) => {
           await supabase.from('volt_trades').update({ max_pnl_points: Math.round(maxPnl * 10000) / 10000 }).eq('id', trade.id);
         }
 
-        // Breakeven armé à +1×SL
+        // Breakeven armé à +1×SL : le trade ne peut plus devenir perdant
         if (slDist > 0 && !trade.breakeven_triggered && pnlDist >= slDist) {
           await supabase.from('volt_trades').update({ breakeven_triggered: true }).eq('id', trade.id);
           trade.breakeven_triggered = true;
           await sendTelegram(chatId,
-            `🛡️ *Breakeven armé — ${trade.instrument}*\nProfit ≥ 1×SL atteint : le trade ne peut plus devenir perdant.`);
+            `🛡️ *Breakeven armé — ${trade.instrument}*\nProfit ≥ 1×SL atteint : le trade ne peut plus perdre. Trailing ATR actif — on le laisse courir.`);
         }
         if (trade.breakeven_triggered && !shouldClose && pnlDist <= 0) {
           shouldClose = true;
           closeReason = '🛡️ Breakeven (profit sécurisé)';
         }
 
-        // Trailing : après un pic ≥ 1×SL, on protège 50% du gain max
-        if (!shouldClose && slDist > 0 && maxPnl >= slDist && pnlDist <= maxPnl * TRAIL_KEEP_RATIO) {
+        // ★ TRAILING CHANDELIER (v3) : après un pic ≥ 1×SL, on sort quand le prix a
+        // retracé trail_atr_mult × ATR(ouverture) depuis le plus haut. Pas de plafond
+        // de gain : c'est LA sortie gagnante du trend hunter.
+        if (!shouldClose && atrOpen > 0 && maxPnl >= slDist && (maxPnl - pnlDist) >= trailMult * atrOpen) {
           shouldClose = true;
-          closeReason = `📉 Trailing (50% du pic protégé)`;
+          const peakAtr = (maxPnl / atrOpen).toFixed(1);
+          closeReason = `🏄 Trailing ATR (pic +${peakAtr}×ATR, retracement ${trailMult}×ATR)`;
         }
 
-        // Time-stops (thèse M15 : 2h, 2h30 max perdant, 6h max gagnant)
+        // Time-stops — un trade qui ne PART pas est re-jugé ; un runner a de l'air
         if (!shouldClose && ageMs >= TIME_STOP_MS) {
           if (pnlDist >= 0) {
-            if (ageMs >= WINNER_MAX_MS) {
+            if (trade.breakeven_triggered) {
+              if (ageMs >= RUNNER_MAX_MS) {
+                shouldClose = true;
+                closeReason = '⏰ Plafond runner (24h — thèse expirée)';
+              }
+            } else if (ageMs >= WINNER_MAX_MS) {
               shouldClose = true;
-              closeReason = '⏰ Time Stop gagnant (6h — thèse M15 expirée)';
-            } else if (!trade.breakeven_triggered && maxPnl < slDist) {
+              closeReason = '⏰ Time Stop gagnant (6h sans breakeven — thèse M15 expirée)';
+            } else if (maxPnl < slDist) {
               const candles = await getRecentCandles(cst, token, epic);
               if (candles.length >= 2) {
                 const last = candles[candles.length - 1], prev = candles[candles.length - 2];
@@ -452,15 +467,17 @@ Deno.serve(async (req: Request) => {
           }
         }
 
-        // Fin de journée : AUCUNE position ne passe la nuit (gap risk + swap)
-        if (!shouldClose && hourParis >= EOD_HOUR_PARIS) {
-          shouldClose = true;
-          closeReason = '🌙 Fin de journée (22h Paris — pas de position overnight)';
-        }
-        // Vendredi : tout est fermé avant le week-end
-        if (!shouldClose && isFriday && nowUtc.getUTCHours() >= FRIDAY_EOD_HOUR_UTC) {
-          shouldClose = true;
-          closeReason = '📅 Vendredi soir — aucune position ne passe le week-end';
+        // Fin de journée / week-end : instruments NON-24/7 uniquement (gap risk + swap).
+        // Le crypto continue — son plafond est le RUNNER_MAX de 24h.
+        if (!is247) {
+          if (!shouldClose && hourParis >= EOD_HOUR_PARIS) {
+            shouldClose = true;
+            closeReason = '🌙 Fin de journée (22h Paris — pas de position overnight)';
+          }
+          if (!shouldClose && isFriday && nowUtc.getUTCHours() >= FRIDAY_EOD_HOUR_UTC) {
+            shouldClose = true;
+            closeReason = '📅 Vendredi soir — aucune position ne passe le week-end';
+          }
         }
 
         if (shouldClose) {

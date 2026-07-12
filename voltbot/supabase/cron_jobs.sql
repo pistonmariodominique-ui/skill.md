@@ -5,10 +5,11 @@
 -- ⚠️ Pour recréer à l'identique : remplacer <CRON_SECRET> par la valeur stockée
 -- dans Supabase Secrets (jamais écrite en clair dans ce fichier).
 
--- 1. volt-scan — analyse + ouverture de trades or/argent/gaz, toutes les 15 min
+-- 1. volt-scan — analyse + ouverture (7 instruments, thèse M15 + entrée M5), toutes les 5 min
+-- (le LLM n'est appelé qu'une fois par fenêtre de 14 min et par instrument — cache de thèse)
 SELECT cron.schedule(
   'volt-scan',
-  '*/15 * * * *',
+  '*/5 * * * *',
   $$
   SELECT net.http_post(
     url := 'https://qjnbjslenxsnfrhmlbxn.supabase.co/functions/v1/volt-trader',

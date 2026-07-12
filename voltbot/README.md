@@ -1,6 +1,6 @@
-# VoltBot ⚡ — Bot de trading haute volatilité (Or, Argent, Gaz naturel)
+# VoltBot ⚡ — Chasseur de tendances explosives (haute volatilité)
 
-Bot de trading autonome sur les instruments à **forte volatilité** via **Capital.com**
+Bot de trading autonome sur **7 instruments à forte volatilité** via **Capital.com**
 (compte **DÉMO**), piloté par **Supabase Edge Functions** (Deno/TypeScript) + Gemini + Telegram.
 
 Frère de [ForexBot](https://github.com/pistonmariodominique-ui/ForexBot) — même projet Supabase
@@ -8,34 +8,49 @@ Frère de [ForexBot](https://github.com/pistonmariodominique-ui/ForexBot) — m�
 Finnhub), mais **entités totalement séparées** : tables `volt_*`, fonctions `volt-*`, jobs cron
 `volt-*`. VoltBot ne touche à AUCUNE table ni fonction de ForexBot.
 
-## Instruments
+## La stratégie v3 : « trend hunter »
 
-| Clé | Epic Capital.com | Marché | Session de trading (Paris) |
+> **Maximiser la volatilité dans le CHOIX des instruments. Minimiser la FRÉQUENCE des trades.**
+> Peu de trades, stops serrés, et on laisse courir les gagnants très loin.
+
+Le vrai edge de la volatilité n'est pas la fréquence — c'est la **queue épaisse** : quand l'or
+ou le BTC part, il peut filer 5-10×ATR. Un gagnant à 1:6 par semaine écrase vingt scalps à 1:1
+(le scalping pur a été chiffré et écarté : le spread mange l'edge, voir la discussion du 12/07).
+Conséquence assumée : **winrate bas (35-45 %)**, beaucoup de petites pertes, quelques gros gains.
+On juge le bot sur l'**expectancy (€/trade)**, jamais sur le winrate.
+
+## Instruments (epics vérifiés sur le démo le 11/07/2026)
+
+| Clé | Marché | Session d'entrée (Paris) | Week-end |
 |---|---|---|---|
-| `GOLD` | GOLD | Or (XAU/USD) | 8h – 22h |
-| `SILVER` | SILVER | Argent (XAG/USD) | 8h – 22h |
-| `NATURALGAS` | NATURALGAS | Gaz naturel (NYMEX) | 14h – 21h |
+| `GOLD` | Or (XAU/USD) | lun-ven 8h–22h | non |
+| `SILVER` | Argent (XAG/USD) | lun-ven 8h–22h | non |
+| `NATURALGAS` | Gaz naturel (NYMEX) | lun-ven 14h–21h | non |
+| `OIL_CRUDE` | Pétrole WTI | lun-ven 10h–21h | non |
+| `US30` | Dow Jones (spread 0,004 % !) | lun-ven 14h–22h | non |
+| `BTCUSD` | Bitcoin | **24/7** | **oui** |
+| `ETHUSD` | Ethereum | **24/7** | **oui** |
 
-## Ce qui est optimisé pour la haute volatilité
+Calendrier **par instrument** : plus de blocage week-end global — le crypto trade samedi/dimanche
+pendant que le reste dort. Les filtres (spread/ATR, vol_ratio) protègent des conditions pourries
+(ex. : spreads crypto élargis le week-end → HOLD automatique).
 
-- **Tout en ATR, pas de pips fixes** : SL bot = `atr_sl_mult`×ATR(14, M15), TP = `atr_tp_mult`×ATR (R:R 1:2).
-- **Filtre de régime de volatilité** : `vol_ratio` = ATR(14) récent / ATR moyen des 200 dernières
-  bougies M15. Sous `vol_ratio_min` (0.7) → marché endormi, on ne trade pas. Au-dessus de
-  `vol_ratio_max` (3.0) → chaos, on ne trade pas. On trade l'**expansion** de volatilité, pas les extrêmes.
-- **Taille de position inversement proportionnelle à la volatilité** : risque € constant par trade
-  (`risk_pct` du capital), levier effectif plafonné à 5×.
-- **Stop à deux niveaux** : le bot gère ses SL/TP serrés basés ATR via `volt-monitor` (chaque minute) ;
-  le **stop GARANTI broker** (minimum ~1% du prix sur l'or) reste posé chez Capital comme filet
-  anti-gap/panne. Le sizing se fait sur le stop broker (pire cas réel).
-- **Stratégie cassure + momentum** (Donchian 20 + EMA20/50 + RSI + biais EMA200 1H appliqué
-  strictement côté code), analyse Gemini 2.5 → 2.0 → Groq en cascade.
-- **Blocage news US à fort impact** (fenêtre ±20 min, Finnhub) — l'or et le gaz sur-réagissent.
-- **Aucune position overnight** (fermeture 22h Paris) ni week-end (vendredi 19h UTC) — les métaux
-  gappent violemment le dimanche soir.
-- Garde-fous hérités de ForexBot : verrous anti-doublon, `/confirms` obligatoire (anti-fantômes),
-  contrôle de marge pré-trade, circuit breaker quotidien, kill-switch hebdo, quota de trades/jour,
-  breakeven à +1×SL, trailing 50% du pic, time-stops 2h/2h30/6h, réconciliation du **P&L réel**
-  Capital (`/history/transactions`), adoption des positions orphelines, watchdog.
+## Le cycle d'un trade
+
+1. **Thèse M15** (toutes les 5 min, LLM mis en cache 14 min par instrument) : régime EMA20/50,
+   RSI, cassure Donchian 20, biais EMA200 1H appliqué strictement par le code, filtre de
+   volatilité `vol_ratio` ∈ [0.7, 3.0] — on trade l'expansion, ni le coma ni le chaos.
+2. **Entrée affinée M5** : la thèse n'est exécutée que si le M5 confirme (clôture au-delà de
+   l'EMA20 M5 + momentum dans le sens). Sinon le bot retente toutes les 5 min pendant 14 min.
+3. **SL initial serré** : 2×ATR(M5), borné 0.6–1.5×ATR(M15), jamais < 3×spread. Sizing au risque
+   € constant (`risk_pct`) calculé sur le **stop garanti broker** (pire cas réel — leçon v107).
+4. **Breakeven à +1×SL** : le trade ne peut plus perdre.
+5. **Sortie gagnante = TRAILING ATR (chandelier)** : pas de take-profit — on sort quand le prix
+   retrace `trail_atr_mult` (2.5) × ATR depuis le pic. Les gagnants courent (plafond 24h).
+6. Garde-fous : time-stops (2h/2h30/6h), fermeture 22h Paris + vendredi soir (instruments
+   non-24/7), stop GARANTI broker en filet anti-gap, news US à fort impact bloquées ±20 min,
+   circuit breaker quotidien, kill-switch hebdo, quota trades/jour, max 3 positions.
+7. **P&L réel** réconcilié depuis `/history/transactions` Capital (pattern ForexBot v38).
 
 ## Structure
 
@@ -44,20 +59,23 @@ voltbot/
   dashboard/index.html      # dashboard (Supabase clé publique, lecture seule + Start/Stop)
   supabase/
     functions/
-      volt-trader/          # cron 15 min : analyse + ouverture (v2 déployée)
-      volt-monitor/         # cron 1 min : surveillance, fermeture, réconciliation P&L (v1 déployée)
+      volt-trader/          # cron 5 min : thèse M15 + entrée M5 + ouverture (v3 déployée)
+      volt-monitor/         # cron 1 min : trailing ATR, breakeven, time-stops, réconciliation (v3)
     schema_voltbot.sql      # schéma de référence des tables volt_*
-    cron_jobs.sql           # jobs pg_cron (volt-scan, volt-monitor)
+    cron_jobs.sql           # jobs pg_cron (volt-scan */5, volt-monitor * * * * *)
 ```
+
+(Une fonction utilitaire `volt-probe` est aussi déployée : découverte de marchés Capital.com
+— recherche d'epics, spreads, horaires — sans jamais trader.)
 
 ## Utilisation
 
-1. **Démarrer/arrêter** : ouvrir `dashboard/index.html` (ou le dashboard Lovable) et cliquer
-   ▶ Démarrer / ⏸ Arrêter — le bouton bascule `volt_bot_status.is_running`.
-2. Le bot analyse toutes les 15 min pendant les sessions, notifie chaque action sur **Telegram**
-   (préfixe ⚡ VoltBot, même bot que ForexBot), et journalise tout dans `volt_signals` / `volt_trades`.
+1. **Démarrer/arrêter** : dashboard (`dashboard/index.html` ou le projet Lovable « VoltBot
+   Dashboard ») → bouton ▶/⏸ qui bascule `volt_bot_status.is_running`.
+2. Notifications **Telegram** (préfixe ⚡ VoltBot, même bot que ForexBot ; secret optionnel
+   `TELEGRAM_ADMIN_CHAT_ID` pour changer de chat). Journal complet dans `volt_signals` / `volt_trades`.
 3. **Mode diagnostic** (sans trader) : appeler `volt-trader` avec `{"diag": true}` et le header
-   `x-cron-secret` → renvoie l'état du compte, des marchés, ATR et vol_ratio.
+   `x-cron-secret` → compte, marchés, ATR M15/M5, vol_ratio, fenêtre d'entrée par instrument.
 
 ## Déploiement d'une fonction
 
@@ -68,5 +86,7 @@ supabase functions deploy volt-trader --project-ref qjnbjslenxsnfrhmlbxn --no-ve
 ## Règle d'or
 
 Compte **DÉMO** jusqu'à validation complète. On optimise l'**expectancy** (€/trade), jamais le
-winrate seul. Jamais de martingale, jamais retirer les stops. Les leçons de ForexBot (v72 fantômes,
-v107 sizing, v108 minGuaranteedStopDistance) sont intégrées dès la v1.
+winrate seul. Jamais de martingale, jamais retirer les stops. Une série de pertes est NORMALE
+pour un trend hunter — les limites jour/semaine protègent pendant les séries noires ; couper le
+bot après 4 pertes, c'est rater le gagnant qui paie tout. Les leçons de ForexBot (v72 fantômes,
+v107 sizing, v108 minGuaranteedStopDistance, v38 réconciliation) sont intégrées.

@@ -124,7 +124,7 @@
       <div class="card">
         <h2>Positions ouvertes</h2>
         <div class="table-scroll"><table id="openTable">
-          <thead><tr><th>Instrument</th><th>Sens</th><th>Entrée</th><th>SL bot</th><th>TP bot</th><th>Taille</th><th>Ouvert</th></tr></thead>
+          <thead><tr><th>Instrument</th><th>Sens</th><th>Entrée</th><th>SL bot</th><th>Sortie</th><th>Taille</th><th>Ouvert</th></tr></thead>
           <tbody></tbody>
         </table></div>
         <div class="empty" id="openEmpty" style="display:none">Aucune position ouverte</div>
@@ -152,8 +152,8 @@
   </div>
 
   <footer>
-    VoltBot — bot or / argent / gaz naturel optimisé haute volatilité · Capital.com <b>DÉMO</b> · Supabase jarvis-mario<br>
-    Analyse toutes les 15 min (volt-trader) · Surveillance chaque minute (volt-monitor) · Actualisation auto toutes les 30 s
+    VoltBot v3 « trend hunter » — Or, Argent, Gaz, Pétrole, US30, BTC, ETH (crypto 24/7) · Capital.com <b>DÉMO</b> · Supabase jarvis-mario<br>
+    Analyse toutes les 5 min (volt-trader, thèse M15 + entrée M5) · Surveillance chaque minute (volt-monitor, trailing ATR) · Actualisation auto toutes les 30 s
   </footer>
 </div>
 
@@ -283,7 +283,7 @@ function renderOpen(rows) {
     <td class="dir ${esc(t.direction)}">${esc(t.direction)}</td>
     <td class="num">${fmt(t.entry_price, 2)}</td>
     <td class="num">${fmt(t.sl_price, 2)}</td>
-    <td class="num">${fmt(t.tp_price, 2)}</td>
+    <td class="num">${t.tp_price != null ? fmt(t.tp_price, 2) : '🏄 Trailing ATR'}</td>
     <td class="num">${fmt(t.size, 2)}</td>
     <td>${fmtTime(t.opened_at)}</td>
   </tr>`).join('');
