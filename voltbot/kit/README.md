@@ -1,7 +1,7 @@
-# ⚡ Kit VoltBot — indicateur + plan + stratégie
+# ⚡ Kit VoltBot — indicateur + prompt + plan + stratégie
 
 Le kit d'optimisation de [VoltBot](../README.md) (bot « trend hunter » haute volatilité,
-Capital.com DÉMO). Trois pièces, à utiliser dans cet ordre :
+Capital.com DÉMO). Quatre pièces, à utiliser dans cet ordre :
 
 ## 1. `indicateur/` — VoltScore (0-100)
 L'indicateur personnalisé qui condense TOUTE la logique du bot en un score :
@@ -16,7 +16,14 @@ expansion de volatilité (25) + force de tendance (25) + cassure Donchian fraîc
   `volt-trader` (Palier 4 du plan : d'abord en shadow, ensuite en filtre si les
   données le justifient).
 
-## 2. `plan/` — la marche à suivre rigoureuse
+## 2. `prompt/` — le cerveau (Gemini v2)
+- **`PROMPT-GEMINI.md`** : le prompt de décision déployé dans `volt-trader` v4,
+  expliqué principe par principe — persona gestionnaire de risque, VoltScore
+  injecté comme donnée objective avec droit de veto asymétrique, calibration
+  ancrée par exemples, anti-injection, règles de modification. Le texte exact
+  vit dans `supabase/functions/volt-trader/index.ts` (source de vérité).
+
+## 3. `plan/` — la marche à suivre rigoureuse
 - **`PLAN-AMELIORATION.md`** : 6 paliers (baseline → élagage des instruments →
   calibration LLM → réglage du trailing → VoltScore → montée en risque), avec les
   requêtes SQL prêtes à coller dans Supabase et les règles de décision chiffrées.
@@ -24,7 +31,7 @@ expansion de volatilité (25) + force de tendance (25) + cassure Donchian fraîc
 - **`JOURNAL-TEMPLATE.md`** : la revue du dimanche (10 min) — copie ce fichier
   chaque semaine et remplis-le. C'est la mémoire du système.
 
-## 3. `strategie/` — mener tout ça au maximum
+## 4. `strategie/` — mener tout ça au maximum
 - **`STRATEGIE-MAX.md`** : les 5 étages (machine → discipline → optimisation →
   capital → écurie de bots), les critères non négociables de passage en réel,
   les pièges qui tuent les systèmes rentables, et ta routine.
