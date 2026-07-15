@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SwingBot AI — Dashboard</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#121722; --panel2:#0e1320; --border:#1e2635;
+    --text:#dbe2ef; --muted:#7c8798; --accent:#4f8cff; --green:#2ecf8b;
+    --red:#ff5d6c; --amber:#ffb454; --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;padding:0 0 40px}
+  header{display:flex;align-items:center;gap:16px;padding:16px 24px;border-bottom:1px solid var(--border);background:var(--panel2);position:sticky;top:0;z-index:5}
+  header h1{font-size:17px;font-weight:700;letter-spacing:.3px}
+  header .mode{font:12px var(--mono);padding:3px 10px;border-radius:20px;border:1px solid var(--border);color:var(--muted)}
+  header .ks{margin-left:auto;font:12px var(--mono);padding:3px 10px;border-radius:20px}
+  .ks.ok{background:#0f2b1f;color:var(--green);border:1px solid #1d4d38}
+  .ks.armed{background:#3a1218;color:var(--red);border:1px solid #6e2430}
+  nav{display:flex;gap:4px;padding:10px 24px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+  nav button{background:none;border:1px solid transparent;color:var(--muted);padding:6px 14px;border-radius:8px;cursor:pointer;font-size:13px}
+  nav button.active{background:var(--panel);color:var(--text);border-color:var(--border)}
+  main{padding:20px 24px;max-width:1300px;margin:0 auto}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:20px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+  .card .label{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted)}
+  .card .value{font:600 22px var(--mono);margin-top:4px}
+  .value.pos{color:var(--green)}.value.neg{color:var(--red)}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px;overflow-x:auto}
+  .panel h2{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);margin-bottom:12px}
+  table{width:100%;border-collapse:collapse;font:12.5px var(--mono);white-space:nowrap}
+  th{color:var(--muted);text-align:left;font-weight:500;padding:6px 10px;border-bottom:1px solid var(--border)}
+  td{padding:6px 10px;border-bottom:1px solid #161d2b}
+  tr:last-child td{border-bottom:none}
+  .tag{padding:1px 8px;border-radius:10px;font-size:11px}
+  .tag.long,.tag.OPEN,.tag.RECONCILED{background:#0f2b1f;color:var(--green)}
+  .tag.short,.tag.REJECTED,.tag.error{background:#3a1218;color:var(--red)}
+  .tag.warn{background:#332508;color:var(--amber)}
+  .empty{color:var(--muted);padding:20px;text-align:center}
+  svg{display:block;width:100%}
+  .hidden{display:none}
+  .note{font-size:12px;color:var(--muted);margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🌊 SwingBot AI</h1>
+  <span class="mode" id="mode">mode: —</span>
+  <span class="ks ok" id="ks">kill-switch : —</span>
+</header>
+<nav id="nav"></nav>
+<main id="main"></main>
+<script>
+const TABS = [
+  ["overview","Vue d'ensemble"],["signals","Opportunités"],["positions","Positions"],
+  ["risk","Risque portfolio"],["perf","Performance"],["journal","Journal"],
+  ["lab","Laboratoire"],["security","Sécurité"]
+];
+let active = "overview";
+const $ = s => document.querySelector(s);
+const api = k => fetch("/api/"+k).then(r=>r.json()).catch(()=>[]);
+const fmt = (v,d=2) => v==null ? "—" : Number(v).toFixed(d);
+
+function nav(){
+  $("#nav").innerHTML = TABS.map(([k,l]) =>
+    `<button class="${k===active?'active':''}" onclick="go('${k}')">${l}</button>`).join("");
+}
+function go(k){ active=k; nav(); render(); }
+
+function table(rows, cols){
+  if(!rows.length) return `<div class="empty">Aucune donnée — lancez un cycle ou un backtest.</div>`;
+  const head = cols.map(c=>`<th>${c[1]}</th>`).join("");
+  const body = rows.map(r=>"<tr>"+cols.map(c=>{
+    let v = r[c[0]];
+    if(c[2]==="tag") v = `<span class="tag ${v}">${v??"—"}</span>`;
+    else if(c[2]==="num") v = fmt(v, c[3]??2);
+    else if(c[2]==="pnl"){const n=Number(v??0);v=`<span class="${n>=0?'value pos':'value neg'}" style="font-size:12.5px">${fmt(v)}</span>`}
+    else if(c[2]==="ts") v = (v||"").replace("T"," ").slice(0,16);
+    return `<td>${v??"—"}</td>`;
+  }).join("")+"</tr>").join("");
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function sparkline(points, w=1100, h=180){
+  if(points.length<2) return `<div class="empty">Pas encore de courbe d'equity.</div>`;
+  const vals = points.map(p=>p[1]);
+  const min = Math.min(...vals), max = Math.max(...vals), span = (max-min)||1;
+  const step = w/(points.length-1);
+  const d = points.map((p,i)=>`${i?"L":"M"}${(i*step).toFixed(1)},${(h-10-((p[1]-min)/span)*(h-30)).toFixed(1)}`).join(" ");
+  const up = vals[vals.length-1] >= vals[0];
+  return `<svg viewBox="0 0 ${w} ${h}"><path d="${d}" fill="none" stroke="${up?'#2ecf8b':'#ff5d6c'}" stroke-width="2"/></svg>
+    <div class="note">min ${fmt(min)} · max ${fmt(max)} · dernier ${fmt(vals[vals.length-1])}</div>`;
+}
+
+async function render(){
+  const m = $("#main");
+  m.innerHTML = `<div class="empty">Chargement…</div>`;
+  if(active==="overview"){
+    const [ov] = await api("overview");
+    const curve = await api("equity_curve");
+    const o = ov||{};
+    m.innerHTML = `
+      <div class="cards">
+        <div class="card"><div class="label">Equity</div><div class="value">${fmt(o.equity)}</div></div>
+        <div class="card"><div class="label">Drawdown</div><div class="value ${o.drawdown_pct>0?'neg':''}">${fmt(o.drawdown_pct)}%</div></div>
+        <div class="card"><div class="label">Risque ouvert</div><div class="value">${fmt(o.open_risk_money)}</div></div>
+        <div class="card"><div class="label">Positions</div><div class="value">${o.open_positions??"—"}</div></div>
+        <div class="card"><div class="label">P&L jour</div><div class="value ${o.daily_pnl_pct<0?'neg':'pos'}">${fmt(o.daily_pnl_pct)}%</div></div>
+        <div class="card"><div class="label">P&L semaine</div><div class="value ${o.weekly_pnl_pct<0?'neg':'pos'}">${fmt(o.weekly_pnl_pct)}%</div></div>
+      </div>
+      <div class="panel"><h2>Courbe d'equity (snapshots)</h2>${sparkline(curve.map(r=>[r.ts,r.equity]))}</div>`;
+  }
+  else if(active==="signals"){
+    const rows = await api("signals");
+    m.innerHTML = `<div class="panel"><h2>Setups détectés — validés et refusés, avec raisons</h2>${
+      table(rows,[["ts","Date","ts"],["symbol","Symbole"],["direction","Sens","tag"],
+        ["entry_price","Entrée","num",5],["stop_price","Stop","num",5],["rr_expected","R:R","num",1],
+        ["regime","Régime"],["reasons","Raisons"],["abstain_reasons","Motifs de refus"]])}</div>`;
+  }
+  else if(active==="positions"){
+    const rows = await api("positions");
+    m.innerHTML = `<div class="panel"><h2>Positions (ouvertes et clôturées)</h2>${
+      table(rows,[["symbol","Symbole"],["direction","Sens","tag"],["units","Unités","num",0],
+        ["entry_price","Entrée","num",5],["stop_price","Stop","num",5],["opened_ts","Ouvert","ts"],
+        ["closed_ts","Clos","ts"],["pnl_money","P&L","pnl"],["pnl_r","R","num",2],
+        ["swap_paid","Swap","num",2],["close_reason","Sortie"],["mode","Mode"]])}</div>`;
+  }
+  else if(active==="risk"){
+    const rows = await api("positions");
+    const open = rows.filter(r=>!r.closed_ts);
+    const expo = {};
+    open.forEach(p=>{
+      const b=p.symbol.slice(0,3), q=p.symbol.slice(3,6), s=p.direction==="long"?1:-1;
+      expo[b]=(expo[b]||0)+s*(p.risk_money||0); expo[q]=(expo[q]||0)-s*(p.risk_money||0);
+    });
+    const exRows = Object.entries(expo).map(([c,v])=>({ccy:c,net:v,abs:Math.abs(v)}));
+    m.innerHTML = `
+      <div class="panel"><h2>Exposition par devise (risque monétaire net — corrélation 1 en stress)</h2>${
+        table(exRows,[["ccy","Devise"],["net","Net","pnl"],["abs","Stress |corr=1|","num"]])}</div>
+      <div class="panel"><h2>Positions ouvertes</h2>${
+        table(open,[["symbol","Symbole"],["direction","Sens","tag"],["risk_money","Risque","num"],
+          ["entry_price","Entrée","num",5],["stop_price","Stop","num",5]])}</div>`;
+  }
+  else if(active==="perf"){
+    const daily = await api("daily_equity");
+    const pos = (await api("positions")).filter(r=>r.closed_ts);
+    const pnl = pos.reduce((a,p)=>a+(p.pnl_money||0),0);
+    const wins = pos.filter(p=>p.pnl_money>0).length;
+    m.innerHTML = `
+      <div class="cards">
+        <div class="card"><div class="label">Trades clos</div><div class="value">${pos.length}</div></div>
+        <div class="card"><div class="label">P&L net cumulé</div><div class="value ${pnl<0?'neg':'pos'}">${fmt(pnl)}</div></div>
+        <div class="card"><div class="label">Taux de réussite</div><div class="value">${pos.length?fmt(wins/pos.length*100,1):"—"}%</div></div>
+        <div class="card"><div class="label">Swaps payés</div><div class="value">${fmt(pos.reduce((a,p)=>a+(p.swap_paid||0),0))}</div></div>
+      </div>
+      <div class="panel"><h2>Equity quotidienne</h2>${sparkline(daily.map(r=>[r.date,r.equity]))}</div>`;
+  }
+  else if(active==="journal"){
+    const [trs, evs] = await Promise.all([api("transitions"), api("events")]);
+    m.innerHTML = `
+      <div class="panel"><h2>Transitions de trades (machine d'états)</h2>${
+        table(trs,[["ts","Date","ts"],["trade_id","Trade"],["from_state","De"],
+          ["to_state","Vers","tag"],["reason","Motif"]])}</div>
+      <div class="panel"><h2>Événements système</h2>${
+        table(evs,[["ts","Date","ts"],["level","Niveau","tag"],["source","Source"],["message","Message"]])}</div>`;
+  }
+  else if(active==="lab"){
+    const rows = await api("backtests");
+    const parsed = rows.map(r=>{const mm=JSON.parse(r.metrics||"{}");return {
+      ts:r.ts, version:r.strategy_version, pf:mm.profit_factor, exp:mm.expectancy_r,
+      n:mm.n_trades, dd:mm.max_drawdown_pct, ret:mm.net_return_pct,
+      gates:r.passed_gates? "PASS":"FAIL"}});
+    m.innerHTML = `<div class="panel"><h2>Backtests — séparé du live (section 15.7)</h2>${
+      table(parsed,[["ts","Date","ts"],["version","Version"],["n","Trades"],
+        ["pf","Profit factor","num"],["exp","Expectancy R","num"],["dd","Max DD %","num"],
+        ["ret","Rendement %","pnl"],["gates","Portes","tag"]])}
+      <div class="note">Les portes (PF ≥ 1.20, expectancy ≥ 0.10R, ≥ 150 trades, DD, coûts ×1.5, Monte-Carlo p95)
+      n'autorisent que le passage en SHADOW — jamais directement en réel.</div></div>`;
+  }
+  else if(active==="security"){
+    const ks = await api("killswitch");
+    m.innerHTML = `
+      <div class="panel"><h2>Kill-switch — historique</h2>${
+        table(ks,[["ts","Date","ts"],["reason","Déclencheur"],["detail","Détail"]])}</div>
+      <div class="panel"><h2>Passage en réel</h2>
+        <div class="note">Le mode réel est verrouillé par : (1) checklist Go/No-Go (python run.py checklist),
+        (2) variable d'environnement SWINGBOT_REAL_MODE_I_ACCEPT_LOSSES=YES,
+        (3) double confirmation interactive au lancement. Ce dashboard est en lecture seule :
+        il ne peut ni armer un ordre ni changer de mode — c'est volontaire.</div></div>`;
+  }
+}
+
+async function head(){
+  const [ov] = await api("overview");
+  const ks = await api("killswitch");
+  const armed = ks.length && ks[0].reason!=="manual_reset";
+  const el = $("#ks");
+  el.textContent = "kill-switch : " + (armed? "ARMÉ":"désarmé");
+  el.className = "ks " + (armed? "armed":"ok");
+}
+nav(); render(); head();
+setInterval(()=>{render();head();}, 30000);
+</script>
+</body>
+</html>

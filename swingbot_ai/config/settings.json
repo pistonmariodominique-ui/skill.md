@@ -1,0 +1,85 @@
+{
+  "mode": "shadow",
+  "account_currency": "EUR",
+  "initial_equity": 10000.0,
+  "instruments": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"],
+
+  "risk": {
+    "shadow_demo": {
+      "risk_per_trade_pct": 0.50,
+      "max_open_risk_pct": 1.50,
+      "max_positions": 3,
+      "max_cluster_risk_pct": 0.75,
+      "max_daily_loss_pct": 1.5,
+      "max_weekly_loss_pct": 3.0,
+      "killswitch_drawdown_pct": 8.0
+    },
+    "real": {
+      "risk_per_trade_pct": 0.25,
+      "max_open_risk_pct": 0.75,
+      "max_positions": 2,
+      "max_cluster_risk_pct": 0.50,
+      "max_daily_loss_pct": 1.0,
+      "max_weekly_loss_pct": 2.0,
+      "killswitch_drawdown_pct": 5.0
+    }
+  },
+
+  "strategy": {
+    "name": "swing_pullback",
+    "version": "1.0.0",
+    "ema_fast": 20,
+    "ema_mid": 50,
+    "ema_slow": 200,
+    "atr_period": 14,
+    "adx_period": 14,
+    "adx_min": 0,
+    "pivot_lookback": 5,
+    "sl_buffer_atr_daily": 0.2,
+    "min_rr_net": 2.0,
+    "partial_take_at_r": 0.0,
+    "breakeven_after_r": 1.0,
+    "trailing": "pivot_h4",
+    "time_stop_h4_bars": 30,
+    "signal_ttl_h4_bars": 2
+  },
+
+  "backtest": {
+    "spread_pips_base": 1.0,
+    "spread_pips_stress": 2.5,
+    "slippage_pips_max": 1.0,
+    "slippage_stress_multiplier": 1.5,
+    "commission_per_lot": 0.0,
+    "swap_long_pips_per_day": -0.55,
+    "swap_short_pips_per_day": -0.25,
+    "triple_swap_weekday": 2,
+    "cost_stress_multiplier": 1.5,
+    "monte_carlo_runs": 1000,
+    "walk_forward_train_bars": 1500,
+    "walk_forward_test_bars": 375
+  },
+
+  "weekend": {
+    "no_new_entries_friday_after_utc": "15:00",
+    "reduce_before_major_events": true
+  },
+
+  "ai": {
+    "enabled": false,
+    "model": "claude-sonnet-5",
+    "temperature": 0.1,
+    "prompt_version": "swing-analyst-v1",
+    "note": "L'IA classe et explique. Elle n'a AUCUN pouvoir d'ordre (section 9)."
+  },
+
+  "telegram": {
+    "enabled": false
+  },
+
+  "broker": {
+    "provider": "paper",
+    "capital_base_url_demo": "https://demo-api-capital.backend-capital.com",
+    "capital_base_url_live": "https://api-capital.backend-capital.com",
+    "min_stop_distance_check": true
+  }
+}
